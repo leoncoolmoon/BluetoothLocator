@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bluetooth Device Locator</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h2 { color: #333; }
+        select, button { margin: 10px 0; padding: 5px; }
+        #deviceInfo { margin-top: 20px; }
+        #error-message { color: red; margin-top: 10px; }
+        .modal { display: none; position: fixed; z-index: 1; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.4); }
+        .modal-content { background-color: #fefefe; margin: 15% auto; padding: 20px; border: 1px solid #888; width: 80%; }
+    </style>
+</head>
+<body>
+    <h2>Bluetooth Device Locator</h2>
+    <div>
+        <button id="scan-button">Add Devices</button>
+        <label for="device-select">Select device to locate:</label>
+        <select id="device-select">
+            <option value="">-- Select device --</option>
+        </select>
+        <button id="locate-button">Locate Device</button>
+    </div>
+    <div id="deviceInfo"></div>
+    <div id="error-message"></div>
+
+    <div id="moveModal" class="modal">
+        <div class="modal-content">
+            <p>Please move to a new position and click 'Continue' when ready.</p>
+            <button id="continueButton">Continue</button>
+        </div>
+    </div>
+
+    <script>
+        let devices = [];
+
+        async function scanForDevices() {
+            try {
+                const device = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true,
+                    optionalServices: ['generic_access']
+                });
+                device.addEventListener('advertisementreceived', event => {
+                    const deviceInfo = {
+                        name: event.device.name || 'Unknown device',
+                        id: event.device.id,
+                        rssi: event.rssi
+                    };
+                    if (!devices.some(d => d.id === deviceInfo.id)) {
+                        devices.push(deviceInfo);
+                        updateDeviceList();
+                    }
+                });
+                await device.watchAdvertisements();
+                document.getElementById('error-message').textContent = '';
+            } catch (error) {
+                console.error('Error scanning for devices:', error);
+                document.getElementById('error-message').textContent = `Error: ${error.message}`;
+            }
+        }
+
+        function updateDeviceList() {
+            const select = document.getElementById('device-select');
+            select.innerHTML = '<option value="">-- Select device --</option>';
+            devices.forEach(device => {
+                const option = document.createElement('option');
+                option.value = device.id;
+                option.textContent = `${device.name} (${device.id})`;
+                select.appendChild(option);
+            });
+        }
+
+        function locateDevice() {
+            const deviceId = document.getElementById('device-select').value;
+            if (!deviceId) {
+                alert('Please select a device first.');
+                return;
+            }
+            const selectedDevice = devices.find(device => device.id === deviceId);
+            if (!selectedDevice) {
+                alert('Selected device not found.');
+                return;
+            }
+
+            // Check if there are enough other devices for accurate positioning
+            const otherDevices = devices.filter(d => d.id !== selectedDevice.id);
+            if (otherDevices.length < 4) {
+                alert('Not enough other devices paired for accurate positioning. Please pair more devices.');
+                return;
+            }
+
+            // Proceed with locating process
+            // This is where you would implement the actual locating logic
+            alert(`Locating ${selectedDevice.name}`);
+            // Example: showMoveModal(); and start the locating process
+        }
+
+        document.getElementById('scan-button').addEventListener('click', scanForDevices);
+        document.getElementById('locate-button').addEventListener('click', locateDevice);
+
+        document.getElementById('continueButton').addEventListener('click', () => {
+            document.getElementById('moveModal').style.display = 'none';
+            // Continue the locating process here
+        });
+    </script>
+</body>
+</html>

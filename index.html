@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>蓝牙设备定位器</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.0/chart.min.js"></script>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 20px; 
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            width: 80%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        select { 
+            width: 100%;
+            margin: 5px 0; 
+        }
+        #error-message { margin-top: 20px; }
+        #chart { margin-top: 20px; width: 100%; max-width: 600px; }
+        .button-container {
+            width: 100%;
+            display: flex;
+            justify-content: space-evenly;
+            align-items: flex-start;
+            flex-wrap: nowrap;
+            flex-direction: row;
+            margin-top: 10px;
+        }
+        .button-container button {
+            margin: 5px;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.4);
+        }
+        .modal-content {
+            background-color: #fefefe;
+            margin: 15% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 80%;
+            text-align: center;
+        }
+        #log {
+            width: 100%;
+            height: 200px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-top: 20px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <h1>蓝牙设备定位器</h1>
+    
+    <div class="container">
+ 
+        <div class="button-container">
+            <button id="selectDevice">选择设备</button>
+        </div>
+        <div>
+            <p id="distance"></p>
+            <canvas id="chart"></canvas>
+        </div>
+    </div>
+
+    <div id="error-message"></div>
+    <div id="log"></div>
+
+    <script>
+        let chart;
+        let currentPosition = [];
+        let targetDevice;
+        let baseStations = [];
+        let measurements = [];
+        const selectDeviceButton = document.getElementById('selectDevice');
+        const logElement = document.getElementById('log');
+        const distanceChartHandler = document.getElementById('chart').getContext('2d');
+        let distanceArray = [];
+        let scale = 1;
+//卡尔曼滤波器
+class KalmanFilter {
+    constructor({R = 1, Q = 1, A = 1, B = 0, C = 1} = {}) {
+        this.A = A;      // State transition matrix
+        this.B = B;      // Control input matrix
+        this.C = C;      // Measurement matrix
+        this.R = R;      // Measurement noise covariance
+        this.Q = Q;      // Process noise covariance
+        this.P = 1;      // Error covariance matrix (initial estimate)
+        this.x = 0;      // State estimate (initial estimate)
+    }
+
+    predict(u = 0) {
+        // Predict the next state
+        this.x = this.A * this.x + this.B * u;
+        this.P = this.A * this.P * this.A + this.Q;
+    }
+
+    update(z) {
+        // Update from a measurement
+        const y = z - this.C * this.x;           // Innovation
+        const K = this.P * this.C / (this.C * this.P * this.C + this.R); // Kalman gain
+        this.x = this.x + K * y;                 // Update estimate
+        this.P = (1 - K * this.C) * this.P;      // Update error covariance
+    }
+
+    filter(z, u = 0) {
+        this.predict(u);
+        this.update(z);
+        return this.x;  // Return the filtered value
+    }
+}
+// 创建卡尔曼滤波器实例
+const kf = new KalmanFilter({
+    R: 0.01,  // 假设测量噪声较小
+    Q: 1      // 假设过程噪声较大
+});
+
+
+        function log(message) {
+            console.log(message);
+            logElement.innerHTML += message + '<br>';
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+        function outPutDistance(distance) {
+            const distanceElement = document.getElementById('distance');
+            if(distance == null) {
+                distanceElement.innerHTML = '无法计算距离';
+            } else if (distance < 0.1) {
+                distanceElement.innerHTML = distance*10000 + ' cm';
+                scale = 10000;
+            } else {
+                distanceElement.innerHTML = distance.toFixed(2) + ' m';
+                scale = 1;
+            }
+            distanceArray.push(distance);
+            if (distanceArray.length > distanceChartHandler.canvas.width) {
+                distanceArray.shift();
+            }
+
+            // 绘制距离曲线
+            distanceChartHandler.clearRect(0, 0, distanceChartHandler.canvas.width, distanceChartHandler.canvas.height);
+            distanceChartHandler.lineWidth = 2;
+            distanceChartHandler.strokeStyle = 'blue';
+            distanceChartHandler.beginPath();
+            distanceChartHandler.moveTo(0, distanceArray[0]);
+            for (let i = 0; i < measurements.length; i++) {
+                distanceChartHandler.lineTo(i, distanceArray[i]);
+            }
+            distanceChartHandler.stroke();
+            
+        }
+
+        selectDeviceButton.addEventListener('click', onWatchAdvertisementsButtonClick);
+
+        async function onWatchAdvertisementsButtonClick() {
+            try {
+                const device = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true
+                });
+                log(`> Requested ${device.name}`);
+                
+                device.addEventListener('advertisementreceived', event => {
+                    log('Advertisement received.');
+                    log(`  Device Name: ${event.device.name}`);
+                    log(`  Device ID: ${event.device.id}`);
+                    log(`  RSSI: ${event.rssi}`);
+                    log(`  TX Power: ${event.txPower}`);
+                    log(`  UUIDs: ${event.uuids}`);
+                    var distance = calculateDistance(event.rssi, event.txPower);
+                    if (distance) {
+                    log(`Estimated Distance: ${distance*100} m`);
+                    distance = kf.filter(distance);
+                    log(`Filtered Distance: ${distance*100} m`);
+                    outPutDistance(distance);
+                    }
+                });
+                log(`Watching advertisements from "${device.name}"...`);
+                await device.watchAdvertisements();
+            } catch (error) {
+                log(`Argh! ${error}`);
+            }
+        }
+
+
+
+        function calculateDistance(rssi, txPower) {
+            if (!txPower) {
+                log('TX Power is not available.');
+                return null;
+            }
+            const n = 2;  // 从2开始调整，根据实际环境可能需要更改
+            let distance = Math.pow(10, (txPower - rssi) / (10 * n));
+            return distance;
+        }
+
+        /**
+         * Calculates the distance between a Bluetooth device and a receiver using the given parameters.
+         * 
+         * @param {number} rssi The received signal strength indicator.
+         * @param {number} txPower The transmission power of the device.
+         * @param {number} f The frequency of the signal.
+         * @param {number} hB The height of the base station.
+         * @param {number} hM The height of the mobile device.
+         * @param {number} W The width of the area.
+         * 
+         * @returns {number} The calculated distance in meters.
+         */
+        // function calculateDistance(rssi, txPower, f, hB, hM, W) {
+        //     const a = 3.2 * Math.pow((f / 28), 2) + 18.33 * Math.log10(f) + 38.33;
+        //     const b = 4.78 * Math.pow((f / 28), 2) - 18.33 * Math.log10(f) + 38.33;
+        //     const c = 3.2 * (Math.pow((f / 28), 2) - 1);
+        //     const d = 18.33 * Math.log10(f) - 40.94;
+        //     const e = 26.16;
+
+        //     const L = a + b * Math.log10(hB) + c * Math.log10(hM) + d * Math.log10(W) + e;
+
+        //     const distance = Math.pow(10, (txPower - rssi - L) / (33.22 * Math.log10(f) - 13.82));
+        //     return distance;
+        //     }
+            /**
+             * Calculates the distance between a Bluetooth device and the receiver based on the RSSI and TX Power values.
+             * 
+             * @param {number} rssi The Received Signal Strength Indicator value.
+             * @param {number} txPower The transmission power of the Bluetooth device.
+             * @param {number} n The path loss exponent.
+             * @param {number} pl0 The reference path loss value.
+             * @returns {number} The calculated distance in meters.
+             */
+            // function calculateDistance(rssi, txPower, n, pl0) {
+            //   const pl = txPower - rssi;
+            //   const d = Math.pow(10, (pl - pl0) / (10 * n));
+            //   return d;
+            // }
+
+    </script>
+</body>
+</html>

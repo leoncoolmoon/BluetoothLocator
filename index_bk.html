@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>蓝牙设备定位器</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.0/chart.min.js"></script>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 20px; 
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            width: 80%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        select { 
+            width: 100%;
+            margin: 5px 0; 
+        }
+        #error-message { margin-top: 20px; }
+        #chart { margin-top: 20px; width: 100%; max-width: 600px; }
+        .button-container {
+            width: 100%;
+            display: flex;
+            justify-content: space-evenly;
+            align-items: flex-start;
+            flex-wrap: nowrap;
+            flex-direction: row;
+            margin-top: 10px;
+        }
+        .button-container button {
+            margin: 5px;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.4);
+        }
+        .modal-content {
+            background-color: #fefefe;
+            margin: 15% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 80%;
+            text-align: center;
+        }
+        #log {
+            width: 100%;
+            height: 200px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-top: 20px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <h1>蓝牙设备定位器</h1>
+    
+    <div class="container">
+        <select id="deviceSelect" size="10"></select>
+
+        <div class="button-container">
+            <button id="addDevice">添加设备</button>
+            <button id="removeDevice">删除选中设备</button>
+            <button id="clearList">清空列表</button>
+            <button id="locateDevice">查找当前设备</button>
+        </div>
+    </div>
+
+    <div id="error-message"></div>
+    <canvas id="chart"></canvas>
+    <div id="log"></div>
+
+    <div id="moveModal" class="modal">
+        <div class="modal-content">
+            <p>请移动到一个新位置,然后点击"继续"。</p>
+            <button id="continueButton">继续</button>
+        </div>
+    </div>
+
+    <script>
+        let devices = [];
+        let chart;
+        let currentPosition = [];
+        let targetDevice;
+        let baseStations = [];
+        let measurements = [];
+
+        const deviceSelect = document.getElementById('deviceSelect');
+        const addDeviceButton = document.getElementById('addDevice');
+        const removeDeviceButton = document.getElementById('removeDevice');
+        const clearListButton = document.getElementById('clearList');
+        const locateDeviceButton = document.getElementById('locateDevice');
+        const errorMessage = document.getElementById('error-message');
+        const moveModal = document.getElementById('moveModal');
+        const continueButton = document.getElementById('continueButton');
+        const logElement = document.getElementById('log');
+
+        function log(message) {
+            console.log(message);
+            logElement.innerHTML += message + '<br>';
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+
+        function updateDeviceList() {
+            deviceSelect.innerHTML = '';
+            devices.forEach((device, index) => {
+                const option = document.createElement('option');
+                option.value = index;
+                option.textContent = `${device.name} (${device.id})`;
+                deviceSelect.appendChild(option);
+            });
+        }
+
+        addDeviceButton.addEventListener('click', onWatchAdvertisementsButtonClick);
+
+        async function onWatchAdvertisementsButtonClick() {
+            try {
+                const device = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true
+                });
+                log(`> Requested ${device.name}`);
+                
+                device.addEventListener('advertisementreceived', event => {
+                    log('Advertisement received.');
+                    log(`  Device Name: ${event.device.name}`);
+                    log(`  Device ID: ${event.device.id}`);
+                    log(`  RSSI: ${event.rssi}`);
+                    log(`  TX Power: ${event.txPower}`);
+                    log(`  UUIDs: ${event.uuids}`);
+
+                    const existingDeviceIndex = devices.findIndex(d => d.id === event.device.id);
+                    if (existingDeviceIndex === -1) {
+                        const newDevice = {
+                            name: event.device.name || 'Unknown Device',
+                            id: event.device.id,
+                            rssi: event.rssi,
+                            txPower: event.txPower,
+                            uuids: event.uuids
+                        };
+                        devices.push(newDevice);
+                    } else {
+                        devices[existingDeviceIndex] = {
+                            ...devices[existingDeviceIndex],
+                            rssi: event.rssi,
+                            txPower: event.txPower,
+                            uuids: event.uuids
+                        };
+                    }
+                    updateDeviceList();
+                });
+                
+                log(`Watching advertisements from "${device.name}"...`);
+                await device.watchAdvertisements();
+            } catch (error) {
+                log(`Argh! ${error}`);
+            }
+        }
+
+        removeDeviceButton.addEventListener('click', async () => {
+            const selectedIndex = deviceSelect.value;
+            if (selectedIndex !== '') {
+                const device = devices[selectedIndex];
+                try {
+                    const bluetoothDevice = await navigator.bluetooth.requestDevice({
+                            //filters: [{ id: device.id }]
+                            acceptAllDevices: true
+                    });
+                    await bluetoothDevice.forget();
+                    log(`Device ${device.name} (${device.id}) has been unpaired.`);
+                    devices.splice(selectedIndex, 1);
+                    updateDeviceList();
+                } catch (error) {
+                    log(`Error unpairing device: ${error}`);
+                }
+            } else {
+                log('请先选择一个设备。');
+            }
+        });
+
+        clearListButton.addEventListener('click', async () => {
+            for (const device of devices) {
+                try {
+                    const bluetoothDevice = await navigator.bluetooth.requestDevice({
+                        filters: [{ id: device.id }]
+                    });
+                    await bluetoothDevice.forget();
+                    log(`Device ${device.name} (${device.id}) has been unpaired.`);
+                } catch (error) {
+                    log(`Error unpairing device ${device.name} (${device.id}): ${error}`);
+                }
+            }
+            devices = [];
+            updateDeviceList();
+        });
+
+        function calculateDistance(rssi, txPower) {
+            if (!txPower) {
+                log('TX Power is not available.');
+                return null;
+            }
+            const ratio = rssi / txPower;
+            let distance = Math.pow(10, (txPower - rssi - 41) / 20.0);
+            log(`Estimated Distance: ${distance.toFixed(2)} meters`);
+            return distance;
+        }
+
+        async function locateDevice() {
+            if (devices.length < 5) {
+                log('至少需要5个设备才能进行定位。');
+                return;
+            }
+
+            targetDevice = devices[deviceSelect.value];
+            baseStations = devices.filter((_, index) => index != deviceSelect.value);
+            measurements = [];
+
+            for (let i = 0; i < 4; i++) {
+                log(`Measurement ${i + 1}:`);
+                log(`Target Device: ${targetDevice.name} (${targetDevice.id})`);
+                log(`RSSI: ${targetDevice.rssi}, TX Power: ${targetDevice.txPower}`);
+                
+                const distance = calculateDistance(targetDevice.rssi, targetDevice.txPower);
+                if (distance !== null) {
+                    measurements.push({ distance: distance });
+                }
+
+                log('Base Stations:');
+                baseStations.forEach(station => {
+                    log(`  ${station.name} (${station.id})`);
+                    log(`  RSSI: ${station.rssi}, TX Power: ${station.txPower}`);
+                    const stationDistance = calculateDistance(station.rssi, station.txPower);
+                    log(`  Estimated Distance: ${stationDistance ? stationDistance.toFixed(2) : 'N/A'} meters`);
+                });
+
+                if (i < 3) {
+                    await new Promise(resolve => {
+                        moveModal.style.display = 'block';
+                        continueButton.onclick = () => {
+                            moveModal.style.display = 'none';
+                            resolve();
+                        };
+                    });
+                }
+            }
+
+            updateChart();
+        }
+
+        locateDeviceButton.addEventListener('click', locateDevice);
+
+        function updateChart() {
+            const ctx = document.getElementById('chart').getContext('2d');
+            
+            if (chart) {
+                chart.destroy();
+            }
+
+            chart = new Chart(ctx, {
+                type: 'scatter',
+                data: {
+                    datasets: [
+                        {
+                            label: '基站',
+                            data: baseStations.map((station, i) => ({ 
+                                x: Math.cos(i * 2 * Math.PI / baseStations.length) * 100, 
+                                y: Math.sin(i * 2 * Math.PI / baseStations.length) * 100
+                            })),
+                            backgroundColor: 'blue'
+                        },
+                        {
+                            label: '目标设备',
+                            data: [{ x: 0, y: 0 }],
+                            backgroundColor: 'red'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            position: 'bottom'
+                        },
+                        y: {
+                            type: 'linear',
+                            position: 'left'
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    let label = context.dataset.label || '';
+                                    if (label) {
+                                        label += ': ';
+                                    }
+                                    if (context.datasetIndex === 0) {  // Base stations
+                                        const station = baseStations[context.dataIndex];
+                                        label += `${station.name} (${station.id})`;
+                                    } else {  // Target device
+                                        label += `${targetDevice.name} (${targetDevice.id})`;
+                                    }
+                                    return label;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+</html>
